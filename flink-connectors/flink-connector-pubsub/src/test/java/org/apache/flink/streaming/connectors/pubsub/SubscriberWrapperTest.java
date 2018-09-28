@@ -17,9 +17,11 @@
 
 package org.apache.flink.streaming.connectors.pubsub;
 
+import org.apache.flink.streaming.connectors.pubsub.common.PubSubSubscriberFactory;
 import org.apache.flink.streaming.connectors.pubsub.common.SerializableCredentialsProvider;
 
 import com.google.cloud.pubsub.v1.MessageReceiver;
+import com.google.cloud.pubsub.v1.Subscriber;
 import com.google.pubsub.v1.ProjectSubscriptionName;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -29,6 +31,8 @@ import org.mockito.runners.MockitoJUnitRunner;
 import static org.apache.flink.api.java.ClosureCleaner.ensureSerializable;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
+import static org.mockito.Matchers.any;
+import static org.mockito.Mockito.when;
 
 /**
  * Tests for {@link SubscriberWrapper}.
@@ -41,17 +45,24 @@ public class SubscriberWrapperTest {
 	@Mock
 	private MessageReceiver messageReceiver;
 
+	@Mock
+	private PubSubSubscriberFactory pubSubSubscriberFactory;
+
+	@Mock
+	private Subscriber subscriber;
+
 	@Test
 	public void testSerializedSubscriberBuilder() throws Exception {
-		SubscriberWrapper factory = new SubscriberWrapper(SerializableCredentialsProvider.withoutCredentials(), ProjectSubscriptionName.of("projectId", "subscriptionId"));
+		SubscriberWrapper factory = new SubscriberWrapper(SerializableCredentialsProvider.withoutCredentials(), ProjectSubscriptionName.of("projectId", "subscriptionId"), pubSubSubscriberFactory);
 		ensureSerializable(factory);
 	}
 
 	@Test
 	public void testInitialisation() {
-		SubscriberWrapper factory = new SubscriberWrapper(credentialsProvider, ProjectSubscriptionName.of("projectId", "subscriptionId"));
+		when(pubSubSubscriberFactory.getSubscriber(any(), any(), any())).thenReturn(subscriber);
+		SubscriberWrapper factory = new SubscriberWrapper(credentialsProvider, ProjectSubscriptionName.of("projectId", "subscriptionId"), pubSubSubscriberFactory);
 		factory.initialize(messageReceiver);
 
-		assertThat(factory.getSubscriber().getSubscriptionNameString(), is(ProjectSubscriptionName.format("projectId", "subscriptionId")));
+		assertThat(factory.getSubscriber(), is(subscriber));
 	}
 }

@@ -19,6 +19,7 @@ package org.apache.flink.streaming.connectors.pubsub;
 
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.state.OperatorStateStore;
+import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
 import org.apache.flink.streaming.api.operators.StreamingRuntimeContext;
@@ -43,6 +44,7 @@ public class BoundedPubSubSourceTest {
 	private final SourceFunction.SourceContext<Object> sourceContext = mock(SourceFunction.SourceContext.class);
 	private final AckReplyConsumer ackReplyConsumer = mock(AckReplyConsumer.class);
 	private final DeserializationSchema<Object> deserializationSchema = mock(DeserializationSchema.class);
+	private final MetricGroup metricGroup = mock(MetricGroup.class);
 
 	private FunctionInitializationContext functionInitializationContext = mock(FunctionInitializationContext.class);
 	private OperatorStateStore operatorStateStore = mock(OperatorStateStore.class);
@@ -65,12 +67,14 @@ public class BoundedPubSubSourceTest {
 		when(functionInitializationContext.getOperatorStateStore()).thenReturn(operatorStateStore);
 		when(operatorStateStore.getSerializableListState(any(String.class))).thenReturn(null);
 		when(streamingRuntimeContext.isCheckpointingEnabled()).thenReturn(true);
+		when(streamingRuntimeContext.getMetricGroup()).thenReturn(metricGroup);
 
 		BoundedPubSubSource<Object> boundedPubSubSource = BoundedPubSubSource.newBuilder()
 			.withoutCredentials()
-			.withSubscriberWrapper(subscriberWrapper)
 			.withDeserializationSchema(deserializationSchema)
+			.withProjectSubscriptionName("projectName", "subscriptionName")
 			.build();
+		boundedPubSubSource.setSubscriberWrapper(subscriberWrapper);
 		boundedPubSubSource.initializeState(functionInitializationContext);
 		boundedPubSubSource.setRuntimeContext(streamingRuntimeContext);
 		boundedPubSubSource.open(null);

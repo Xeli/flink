@@ -20,6 +20,7 @@ package org.apache.flink.streaming.connectors.pubsub;
 import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.state.OperatorStateStore;
+import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
 import org.apache.flink.streaming.api.operators.StreamingRuntimeContext;
@@ -65,10 +66,13 @@ public class PubSubSourceTest {
 	private OperatorStateStore operatorStateStore;
 	@Mock
 	private FunctionInitializationContext functionInitializationContext;
+	@Mock
+	private MetricGroup metricGroup;
 
 	@Test
 	public void testOpenWithCheckpointing() throws Exception {
 		when(streamingRuntimeContext.isCheckpointingEnabled()).thenReturn(true);
+		when(streamingRuntimeContext.getMetricGroup()).thenReturn(metricGroup);
 
 		PubSubSource<String> pubSubSource = createTestSource();
 		pubSubSource.setRuntimeContext(streamingRuntimeContext);
@@ -89,6 +93,7 @@ public class PubSubSourceTest {
 	public void testWithCheckpoints() throws Exception {
 		when(deserializationSchema.deserialize(SERIALIZED_MESSAGE)).thenReturn(MESSAGE);
 		when(streamingRuntimeContext.isCheckpointingEnabled()).thenReturn(true);
+		when(streamingRuntimeContext.getMetricGroup()).thenReturn(metricGroup);
 		when(sourceContext.getCheckpointLock()).thenReturn("some object to lock on");
 		when(functionInitializationContext.getOperatorStateStore()).thenReturn(operatorStateStore);
 		when(operatorStateStore.getSerializableListState(any(String.class))).thenReturn(null);
@@ -111,6 +116,7 @@ public class PubSubSourceTest {
 	@Test
 	public void testMessagesAcknowledged() throws Exception {
 		when(streamingRuntimeContext.isCheckpointingEnabled()).thenReturn(true);
+		when(streamingRuntimeContext.getMetricGroup()).thenReturn(metricGroup);
 
 		PubSubSource<String> pubSubSource = createTestSource();
 		pubSubSource.setRuntimeContext(streamingRuntimeContext);
@@ -132,11 +138,13 @@ public class PubSubSourceTest {
 	}
 
 	private PubSubSource<String> createTestSource() throws IOException {
-		return PubSubSource.<String>newBuilder()
-			.withoutCredentials()
-			.withSubscriberWrapper(subscriberWrapper)
-			.withDeserializationSchema(deserializationSchema)
-			.build();
+		PubSubSource pubSubSource = PubSubSource.<String>newBuilder()
+				.withoutCredentials()
+				.withDeserializationSchema(deserializationSchema)
+				.withProjectSubscriptionName("projectName", "subscriptionName")
+				.build();
+		pubSubSource.setSubscriberWrapper(subscriberWrapper);
+		return pubSubSource;
 	}
 
 	private PubsubMessage pubSubMessage() {

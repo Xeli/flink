@@ -17,19 +17,17 @@
 
 package org.apache.flink.streaming.connectors.pubsub;
 
+import org.apache.flink.streaming.connectors.pubsub.common.PubSubSubscriberFactory;
 import org.apache.flink.streaming.connectors.pubsub.common.SerializableCredentialsProvider;
 
 import com.google.api.core.ApiService;
-import com.google.api.gax.grpc.GrpcTransportChannel;
-import com.google.api.gax.rpc.FixedTransportChannelProvider;
-import com.google.api.gax.rpc.TransportChannel;
 import com.google.cloud.pubsub.v1.MessageReceiver;
 import com.google.cloud.pubsub.v1.Subscriber;
 import com.google.pubsub.v1.ProjectSubscriptionName;
-import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
 
 import java.io.Serializable;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Wrapper class around a PubSub {@link Subscriber}.
@@ -39,45 +37,20 @@ class SubscriberWrapper implements Serializable {
 	private final SerializableCredentialsProvider serializableCredentialsProvider;
 	private final String projectId;
 	private final String subscriptionId;
-	private String hostAndPort = null;
+	private final PubSubSubscriberFactory pubSubSubscriberFactory;
 
 	private transient Subscriber subscriber;
-	private transient ManagedChannel managedChannel = null;
-	private transient TransportChannel channel = null;
+	private volatile boolean running = true;
 
-	SubscriberWrapper(SerializableCredentialsProvider serializableCredentialsProvider, ProjectSubscriptionName projectSubscriptionName) {
+	SubscriberWrapper(SerializableCredentialsProvider serializableCredentialsProvider, ProjectSubscriptionName projectSubscriptionName, PubSubSubscriberFactory pubSubSubscriberFactory) {
 		this.serializableCredentialsProvider = serializableCredentialsProvider;
 		this.projectId = projectSubscriptionName.getProject();
 		this.subscriptionId = projectSubscriptionName.getSubscription();
+		this.pubSubSubscriberFactory = pubSubSubscriberFactory;
 	}
 
 	void initialize(MessageReceiver messageReceiver) {
-		Subscriber.Builder builder = Subscriber
-			.newBuilder(ProjectSubscriptionName.of(projectId, subscriptionId), messageReceiver)
-			.setCredentialsProvider(serializableCredentialsProvider);
-
-		if (hostAndPort != null) {
-			managedChannel = ManagedChannelBuilder
-				.forTarget(hostAndPort)
-				.usePlaintext(true) // This is 'Ok' because this is ONLY used for testing.
-				.build();
-			channel = GrpcTransportChannel.newBuilder().setManagedChannel(managedChannel).build();
-			builder.setChannelProvider(FixedTransportChannelProvider.create(channel));
-		}
-
-		this.subscriber = builder.build();
-	}
-
-	/**
-	 * Set the custom hostname/port combination of PubSub.
-	 * The ONLY reason to use this is during tests with the emulator provided by Google.
-	 *
-	 * @param hostAndPort The combination of hostname and port to connect to ("hostname:1234")
-	 * @return The current instance
-	 */
-	public SubscriberWrapper withHostAndPort(String hostAndPort) {
-		this.hostAndPort = hostAndPort;
-		return this;
+		this.subscriber = pubSubSubscriberFactory.getSubscriber(serializableCredentialsProvider, ProjectSubscriptionName.of(projectId, subscriptionId), messageReceiver);
 	}
 
 	void startBlocking() {
@@ -87,19 +60,22 @@ class SubscriberWrapper implements Serializable {
 		if (apiService.state() != ApiService.State.RUNNING) {
 			throw new IllegalStateException("Could not start PubSubSubscriber, ApiService.State: " + apiService.state());
 		}
-		apiService.awaitTerminated();
+		while (running) {
+			awaitTerminated(apiService, 5);
+		}
 	}
 
 	void stop() {
-		subscriber.stopAsync().awaitTerminated();
-		if (channel != null) {
-			try {
-				channel.close();
-				managedChannel.shutdownNow();
-			} catch (Exception e) {
-				// Ignore
-			}
+		running = false;
+		if (subscriber != null) {
+			subscriber.stopAsync().awaitTerminated();
 		}
+	}
+
+	private void awaitTerminated(ApiService apiService, long seconds) {
+		try {
+			apiService.awaitTerminated(seconds, TimeUnit.SECONDS);
+		} catch (TimeoutException e) {}
 	}
 
 	Subscriber getSubscriber() {

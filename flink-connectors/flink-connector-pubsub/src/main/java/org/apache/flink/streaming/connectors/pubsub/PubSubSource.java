@@ -18,6 +18,7 @@
 package org.apache.flink.streaming.connectors.pubsub;
 
 import org.apache.flink.api.common.functions.RuntimeContext;
+import org.apache.flink.api.common.functions.StoppableFunction;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
@@ -25,12 +26,14 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.functions.source.MultipleIdsMessageAcknowledgingSourceBase;
 import org.apache.flink.streaming.api.functions.source.ParallelSourceFunction;
 import org.apache.flink.streaming.api.operators.StreamingRuntimeContext;
+import org.apache.flink.streaming.connectors.pubsub.common.PubSubSubscriberFactory;
 import org.apache.flink.streaming.connectors.pubsub.common.SerializableCredentialsProvider;
 
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.auth.Credentials;
 import com.google.cloud.pubsub.v1.AckReplyConsumer;
 import com.google.cloud.pubsub.v1.MessageReceiver;
+import com.google.cloud.pubsub.v1.Subscriber;
 import com.google.pubsub.v1.ProjectSubscriptionName;
 import com.google.pubsub.v1.PubsubMessage;
 
@@ -42,7 +45,7 @@ import java.util.List;
  * PubSub Source, this Source will consume PubSub messages from a subscription and Acknowledge them as soon as they have been received.
  */
 public class PubSubSource<OUT> extends MultipleIdsMessageAcknowledgingSourceBase<OUT, String, AckReplyConsumer>
-		implements MessageReceiver, ResultTypeQueryable<OUT>, ParallelSourceFunction<OUT> {
+		implements MessageReceiver, ResultTypeQueryable<OUT>, ParallelSourceFunction<OUT>, StoppableFunction {
 	private DeserializationSchema<OUT> deserializationSchema;
 	private SubscriberWrapper subscriberWrapper;
 
@@ -68,6 +71,8 @@ public class PubSubSource<OUT> extends MultipleIdsMessageAcknowledgingSourceBase
 			throw new IllegalArgumentException("The PubSubSource REQUIRES Checkpointing to be enabled and " +
 				"the checkpointing frequency must be MUCH lower than the PubSub timeout for it to retry a message.");
 		}
+
+		getRuntimeContext().getMetricGroup().gauge("pubsub_messages_in_ack_queue", this::getOutstandingMessagesToAck);
 	}
 
 	private boolean hasNoCheckpointingEnabled(RuntimeContext runtimeContext) {
@@ -107,8 +112,20 @@ public class PubSubSource<OUT> extends MultipleIdsMessageAcknowledgingSourceBase
 		}
 	}
 
+	private Integer getOutstandingMessagesToAck() {
+		return this.sessionIdsPerSnapshot
+				.stream()
+				.mapToInt(tuple -> tuple.f1.size())
+				.sum();
+	}
+
 	@Override
 	public void cancel() {
+		subscriberWrapper.stop();
+	}
+
+	@Override
+	public void stop() {
 		subscriberWrapper.stop();
 	}
 
@@ -140,7 +157,7 @@ public class PubSubSource<OUT> extends MultipleIdsMessageAcknowledgingSourceBase
 	public static class PubSubSourceBuilder<OUT, PSS extends PubSubSource<OUT>, BUILDER extends PubSubSourceBuilder<OUT, PSS, BUILDER>> {
 		protected PSS sourceUnderConstruction;
 
-		private SubscriberWrapper subscriberWrapper = null;
+		private PubSubSubscriberFactory pubSubSubscriberFactory;
 		private SerializableCredentialsProvider serializableCredentialsProvider;
 		private DeserializationSchema<OUT> deserializationSchema;
 		private String projectName;
@@ -218,14 +235,15 @@ public class PubSubSource<OUT> extends MultipleIdsMessageAcknowledgingSourceBase
 		}
 
 		/**
-		 * Set a complete SubscriberWrapper.
-		 * The ONLY reason to use this is during tests.
+		 * Set a PubSubSubscriberFactory
+		 * This allows for custom Subscriber options to be set.
+		 * Cannot be used in combination with withHostAndPort().
 		 *
-		 * @param subscriberWrapper The fully instantiated SubscriberWrapper
+		 * @param pubSubSubscriberFactory A factory to create a {@link Subscriber}
 		 * @return The current PubSubSourceBuilder instance
 		 */
-		public BUILDER withSubscriberWrapper(SubscriberWrapper subscriberWrapper) {
-			this.subscriberWrapper = subscriberWrapper;
+		public BUILDER withPubSubSubscriberFactory(PubSubSubscriberFactory pubSubSubscriberFactory) {
+			this.pubSubSubscriberFactory = pubSubSubscriberFactory;
 			return (BUILDER) this;
 		}
 
@@ -244,19 +262,22 @@ public class PubSubSource<OUT> extends MultipleIdsMessageAcknowledgingSourceBase
 				throw new IllegalArgumentException("The deserializationSchema has not been specified.");
 			}
 
-			if (subscriberWrapper == null) {
-				if (projectName == null || subscriptionName == null) {
-					throw new IllegalArgumentException("The ProjectName And SubscriptionName have not been specified.");
-				}
+			if (pubSubSubscriberFactory != null && hostAndPort != null) {
+				throw new IllegalArgumentException(("withPubSubSubscriberFactory() and withHostAndPort() both called, only one may be called."));
+			}
 
-				subscriberWrapper =
-					new SubscriberWrapper(serializableCredentialsProvider, ProjectSubscriptionName.of(projectName, subscriptionName));
+			if (projectName == null || subscriptionName == null) {
+				throw new IllegalArgumentException("ProjectName or SubscriptionName has not been specified.");
+			}
 
+			if (pubSubSubscriberFactory == null) {
+				pubSubSubscriberFactory = new DefaultPubSubSubscriberFactory();
 				if (hostAndPort != null) {
-					subscriberWrapper.withHostAndPort(hostAndPort);
+					((DefaultPubSubSubscriberFactory) pubSubSubscriberFactory).withHostAndPort(hostAndPort);
 				}
 			}
 
+			SubscriberWrapper subscriberWrapper = new SubscriberWrapper(serializableCredentialsProvider, ProjectSubscriptionName.of(projectName, subscriptionName), pubSubSubscriberFactory);
 			sourceUnderConstruction.setSubscriberWrapper(subscriberWrapper);
 			sourceUnderConstruction.setDeserializationSchema(deserializationSchema);
 
